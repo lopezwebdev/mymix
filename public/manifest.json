@@ -1,0 +1,17 @@
+{
+  "name": "MyMix Music Player",
+  "short_name": "MyMix",
+  "description": "Smart Music Player & Playlist Curator for iOS & Web",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a12",
+  "theme_color": "#0a0a12",
+  "icons": [
+    {
+      "src": "/icons/icon-512.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}
