@@ -8,9 +8,6 @@ export function renderHeader() {
         <span class="brand-title" style="font-size: 1.5rem;">MyMix</span>
       </div>
       <div class="header-actions">
-        <button class="btn-icon" id="btn-install-guide" title="iOS App Install Guide">
-          ${renderSVG('smartphone')}
-        </button>
         <button class="btn-primary" id="btn-add-track">
           ${renderSVG('plus')}
           <span>Add Music</span>
