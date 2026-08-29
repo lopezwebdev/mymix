@@ -15,7 +15,6 @@ export function renderSmartCuratorView(curatedTracks, rules, currentTrackId, isP
       <div class="glass-card">
         <div class="card-header">
           <span class="section-title">Smart Curation Studio</span>
-          <span class="badge">${renderSVG('zap', 14)} Specific Taste Engine</span>
         </div>
 
         <!-- Mood Selector Pills -->
