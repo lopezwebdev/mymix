@@ -1,15 +1,21 @@
-// Web Audio Engine with Single-Element Background Playback, 5-Band EQ, Analyser Visualizer, & MediaSession Integration
+// Web Audio Engine with Single-Element Background Playback,
+// Crossfade, 5-Band EQ, Analyser Visualizer, & MediaSession Integration
+
 /**
  * DEVELOPER NOTE ON BACKGROUND PLAYBACK:
- * Operating systems and mobile browsers (especially iOS Safari and PWA standalone modes)
- * enforce strict background execution power policies. While Web Audio API nodes (AudioContext)
- * may be suspended by the OS when the screen is locked or app is backgrounded, native audio playback via
- * HTMLAudioElement combined with MediaSession API permits continuous background playback.
- * 
- * Our AudioEngine design strictly decoupling HTMLAudioElement playback from Web Audio rendering loops:
- * - HTMLAudioElement (`this.audio`) is persistent and acts as the sole playback source of truth.
- * - MediaElementAudioSourceNode (`this.sourceNode`) is created exactly once to feed the passive EQ and Analyser graph.
- * - The canvas visualizer render loop is purely passive and safely pauses rendering when backgrounded without interrupting audio playback.
+ * Mobile operating systems and browsers, especially iOS Safari and standalone PWAs,
+ * may apply background-execution policies that suspend Web Audio processing.
+ *
+ * This engine keeps native HTMLAudioElement playback independent from the Web Audio
+ * visualizer. The analyser and canvas are optional observers: if visual rendering
+ * pauses while the app is backgrounded, they must never pause, replace, disconnect,
+ * or otherwise affect audio playback.
+ *
+ * - HTMLAudioElement (`this.audio`) is persistent and is the playback source of truth.
+ * - MediaElementAudioSourceNode (`this.sourceNode`) is created exactly once and feeds
+ *   the EQ → analyser → destination graph.
+ * - The visualizer render loop is passive and may pause when backgrounded.
+ * - Browser/OS policies may still interrupt playback; this code must not cause it.
  */
 
 class AudioEngine {
