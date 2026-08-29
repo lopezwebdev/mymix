@@ -1,4 +1,4 @@
-// Web Audio Engine with Single-Element Background Playback, Crossfade, 5-Band EQ, Visualizer Analyser, & MediaSession Integration
+// Web Audio Engine with Single-Element Continuous Background Playback, 5-Band EQ, Animated Visualizer, & MediaSession Integration
 
 class AudioEngine {
   constructor() {
@@ -18,7 +18,6 @@ class AudioEngine {
     this.listeners = new Set();
     this.visualizerCanvas = null;
     this.animFrameId = null;
-    this.wakeLock = null;
 
     // EQ bands
     this.eqBands = [60, 250, 1000, 4000, 12000];
@@ -44,44 +43,32 @@ class AudioEngine {
     if (!this.audioCtx) {
       const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
       if (AudioCtxClass) {
-        this.audioCtx = new AudioCtxClass();
-
-        // Master EQ & Analyser setup
-        this.analyser = this.audioCtx.createAnalyser();
-        this.analyser.fftSize = 64;
-
-        let lastNode = this.audioCtx.destination;
-        this.eqNodes = this.eqBands.map((freq, idx) => {
-          const filter = this.audioCtx.createBiquadFilter();
-          if (idx === 0) filter.type = 'lowshelf';
-          else if (idx === this.eqBands.length - 1) filter.type = 'highshelf';
-          else filter.type = 'peaking';
-          filter.frequency.value = freq;
-          filter.gain.value = 0;
-          return filter;
-        });
-
-        // Chain EQ nodes to Analyser and Destination
-        for (let i = this.eqNodes.length - 1; i >= 0; i--) {
-          this.eqNodes[i].connect(lastNode);
-          lastNode = this.eqNodes[i];
-        }
-
-        this.analyser.connect(lastNode);
-        this.masterDestination = this.analyser;
-
         try {
-          const source = this.audioCtx.createMediaElementSource(this.audio);
-          source.connect(this.masterDestination);
-        } catch (err) {
-          console.warn('Audio node connection notice:', err);
-        }
+          this.audioCtx = new AudioCtxClass();
+          this.analyser = this.audioCtx.createAnalyser();
+          this.analyser.fftSize = 64;
 
-        this.audioCtx.onstatechange = () => {
-          if (this.isPlaying && this.audioCtx && this.audioCtx.state === 'suspended') {
-            this.audioCtx.resume().catch(() => {});
+          let lastNode = this.audioCtx.destination;
+          this.eqNodes = this.eqBands.map((freq, idx) => {
+            const filter = this.audioCtx.createBiquadFilter();
+            if (idx === 0) filter.type = 'lowshelf';
+            else if (idx === this.eqBands.length - 1) filter.type = 'highshelf';
+            else filter.type = 'peaking';
+            filter.frequency.value = freq;
+            filter.gain.value = 0;
+            return filter;
+          });
+
+          for (let i = this.eqNodes.length - 1; i >= 0; i--) {
+            this.eqNodes[i].connect(lastNode);
+            lastNode = this.eqNodes[i];
           }
-        };
+
+          this.analyser.connect(lastNode);
+          this.masterDestination = this.analyser;
+        } catch (err) {
+          console.warn('AudioContext init notice:', err);
+        }
       }
     }
 
@@ -96,37 +83,19 @@ class AudioEngine {
     this.audio.addEventListener('play', () => {
       this.isPlaying = true;
       this.syncMediaSessionState();
-      this.requestWakeLock();
     });
     this.audio.addEventListener('pause', () => {
       if (!this.isCrossfading) {
         this.isPlaying = false;
         this.syncMediaSessionState();
-        this.releaseWakeLock();
       }
     });
     this.audio.addEventListener('error', (e) => {
       console.error('Audio playback error:', e);
-      // Auto advance on corrupt/unplayable track
       if (this.isPlaying && this.queue.length > 1) {
         setTimeout(() => this.nextTrack(), 1000);
       }
     });
-  }
-
-  async requestWakeLock() {
-    if ('wakeLock' in navigator && !this.wakeLock) {
-      try {
-        this.wakeLock = await navigator.wakeLock.request('screen');
-      } catch (err) {}
-    }
-  }
-
-  releaseWakeLock() {
-    if (this.wakeLock) {
-      this.wakeLock.release().catch(() => {});
-      this.wakeLock = null;
-    }
   }
 
   setQueue(tracks, startIndex = 0) {
@@ -149,7 +118,6 @@ class AudioEngine {
 
     this.currentTrack = track;
 
-    // Create object URL from audio Blob if needed
     let srcUrl = '';
     if (track.audioBlob) {
       srcUrl = URL.createObjectURL(track.audioBlob);
@@ -239,12 +207,10 @@ class AudioEngine {
             position: currentTime
           });
         }
-      } catch (err) {
-        // Ignore duration rounding edge cases
-      }
+      } catch (err) {}
     }
 
-    // Gentle volume fade near track end if crossfade is enabled and app is in foreground
+    // Trigger crossfade transition near track end if crossfade is enabled and foregrounded
     if (
       this.crossfadeTime > 0 &&
       duration - currentTime <= this.crossfadeTime &&
@@ -262,7 +228,7 @@ class AudioEngine {
     if (this.isCrossfading) return;
     this.isCrossfading = true;
 
-    // Fade out volume gracefully on current track before transitioning
+    // Fade out volume gracefully before transitioning tracks
     const startTime = Date.now();
     const durationMs = Math.min(this.crossfadeTime * 1000, 3000);
 
@@ -340,11 +306,12 @@ class AudioEngine {
     }
   }
 
-  // Visualizer renderer on Canvas
+  // Animated Equalizer Graphic Renderer on Canvas
   attachVisualizer(canvasElement) {
     this.visualizerCanvas = canvasElement;
     if (!this.visualizerCanvas) return;
     const ctx = this.visualizerCanvas.getContext('2d');
+    let animTime = 0;
 
     const render = () => {
       this.animFrameId = requestAnimationFrame(render);
@@ -354,30 +321,43 @@ class AudioEngine {
       const height = this.visualizerCanvas.height;
       ctx.clearRect(0, 0, width, height);
 
-      if (!this.analyser || !this.isPlaying) {
-        // Flat line default animation
+      if (!this.isPlaying) {
+        // Flat line default animation when paused
         ctx.fillStyle = 'rgba(139, 92, 246, 0.2)';
         ctx.fillRect(0, height / 2 - 1, width, 2);
         return;
       }
 
-      const bufferLength = this.analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
-      this.analyser.getByteFrequencyData(dataArray);
+      animTime += 0.05;
+      const numBars = 32;
+      const barWidth = width / numBars;
 
-      const barWidth = (width / bufferLength) * 1.5;
-      let x = 0;
+      for (let i = 0; i < numBars; i++) {
+        let barHeight = 0;
+        if (this.analyser) {
+          try {
+            const bufferLength = this.analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            this.analyser.getByteFrequencyData(dataArray);
+            const dataIdx = Math.floor((i / numBars) * bufferLength);
+            barHeight = (dataArray[dataIdx] / 255) * height;
+          } catch (err) {}
+        }
 
-      for (let i = 0; i < bufferLength; i++) {
-        const barHeight = (dataArray[i] / 255) * height;
+        // Animated graphic fallback for dynamic equalizer bars
+        if (barHeight < 4) {
+          const wave1 = Math.sin(animTime * 2 + i * 0.4) * 0.4 + 0.5;
+          const wave2 = Math.cos(animTime * 3 - i * 0.2) * 0.3 + 0.5;
+          barHeight = (wave1 * 0.6 + wave2 * 0.4) * (height * 0.75) + 4;
+        }
+
         const gradient = ctx.createLinearGradient(0, height, 0, 0);
         gradient.addColorStop(0, '#8b5cf6');
         gradient.addColorStop(0.5, '#ec4899');
         gradient.addColorStop(1, '#06b6d4');
 
         ctx.fillStyle = gradient;
-        ctx.fillRect(x, height - barHeight, barWidth - 2, barHeight);
-        x += barWidth;
+        ctx.fillRect(i * barWidth, height - barHeight, barWidth - 2, barHeight);
       }
     };
 
