@@ -12,8 +12,9 @@
  * or otherwise affect audio playback.
  *
  * - HTMLAudioElement (`this.audio`) is persistent and is the playback source of truth.
- * - MediaElementAudioSourceNode (`this.sourceNode`) is created exactly once and feeds
- *   the EQ → analyser → destination graph.
+ * - MediaElementAudioSourceNode (`this.analysisSourceNode`) is created exactly once from
+ *   a silent `this.analysisAudio` element and feeds the analyser → gain(0) → destination graph.
+ * - `this.audio` NEVER enters the Web Audio graph (`createMediaElementSource(this.audio)` is NEVER called).
  * - The visualizer render loop is passive and may pause when backgrounded.
  * - Browser/OS policies may still interrupt playback; this code must not cause it.
  */
@@ -21,9 +22,16 @@
 class AudioEngine {
   constructor() {
     this.audioCtx = null;
+
+    // Primary audible HTMLAudioElement (Direct native output; NEVER enters Web Audio graph)
     this.audio = new Audio();
     this.audio.setAttribute('playsinline', 'true');
     this.audio.preload = 'auto';
+
+    // Silent Analysis-only HTMLAudioElement (Feeds Web Audio graph for AnalyserNode)
+    this.analysisAudio = new Audio();
+    this.analysisAudio.setAttribute('playsinline', 'true');
+    this.analysisAudio.preload = 'auto';
 
     this.currentTrack = null;
     this.queue = [];
@@ -38,11 +46,12 @@ class AudioEngine {
     this.animFrameId = null;
     this.currentObjectUrl = null;
 
-    // EQ bands & Audio Graph Nodes
+    // EQ bands & Web Audio Graph Nodes
     this.eqBands = [60, 250, 1000, 4000, 12000];
     this.eqNodes = [];
     this.analyser = null;
-    this.sourceNode = null;
+    this.analysisSourceNode = null;
+    this.analysisGainNode = null;
 
     this.setupAudioElement();
     this.setupVisibilityListener();
@@ -50,13 +59,30 @@ class AudioEngine {
 
   setupVisibilityListener() {
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && this.audio && !this.audio.paused) {
-        if (this.audioCtx && this.audioCtx.state === 'suspended') {
-          this.audioCtx.resume().catch((err) => {
-            console.debug('AudioContext foreground resume notice:', err);
-          });
+      if (!document.hidden) {
+        // App returned to foreground
+        if (this.isPlaying && this.audio && !this.audio.paused) {
+          if (this.analysisAudio) {
+            this.analysisAudio.currentTime = this.audio.currentTime;
+            this.analysisAudio.playbackRate = this.audio.playbackRate || 1;
+          }
+          if (this.audioCtx && this.audioCtx.state === 'suspended') {
+            this.audioCtx.resume().catch((err) => {
+              console.debug('AudioContext foreground resume notice:', err);
+            });
+          }
+          if (this.analysisAudio && this.analysisAudio.paused) {
+            this.analysisAudio.play().catch((err) => {
+              console.warn('Silent analysisAudio play notice on visibility:', err);
+            });
+          }
         }
         this.syncMediaSessionState();
+      } else {
+        // App hidden or phone locked: pause silent analysis player to save battery
+        if (this.analysisAudio && !this.analysisAudio.paused) {
+          this.analysisAudio.pause();
+        }
       }
     });
   }
@@ -70,45 +96,29 @@ class AudioEngine {
           this.analyser = this.audioCtx.createAnalyser();
           this.analyser.fftSize = 64;
 
-          // Create 5-band EQ BiquadFilter nodes
-          this.eqNodes = this.eqBands.map((freq, idx) => {
-            const filter = this.audioCtx.createBiquadFilter();
-            if (idx === 0) filter.type = 'lowshelf';
-            else if (idx === this.eqBands.length - 1) filter.type = 'highshelf';
-            else filter.type = 'peaking';
-            filter.frequency.value = freq;
-            filter.gain.value = 0;
-            return filter;
-          });
+          // Create GainNode set to 0 gain so analysisAudio remains 100% silent
+          this.analysisGainNode = this.audioCtx.createGain();
+          this.analysisGainNode.gain.value = 0;
 
-          // Single persistent MediaElementAudioSourceNode for HTMLAudioElement
-          if (!this.sourceNode) {
-            this.sourceNode = this.audioCtx.createMediaElementSource(this.audio);
+          // Create MediaElementAudioSourceNode ONLY for analysisAudio (NEVER for this.audio)
+          if (!this.analysisSourceNode) {
+            this.analysisSourceNode = this.audioCtx.createMediaElementSource(this.analysisAudio);
           }
 
-          // Construct intended Audio Graph:
-          // persistent HTMLAudioElement -> MediaElementAudioSourceNode -> EQ nodes -> AnalyserNode -> AudioContext.destination
-          if (this.eqNodes.length > 0) {
-            this.sourceNode.connect(this.eqNodes[0]);
-            for (let i = 0; i < this.eqNodes.length - 1; i++) {
-              this.eqNodes[i].connect(this.eqNodes[i + 1]);
-            }
-            this.eqNodes[this.eqNodes.length - 1].connect(this.analyser);
-          } else {
-            this.sourceNode.connect(this.analyser);
-          }
-
-          this.analyser.connect(this.audioCtx.destination);
+          // Build Audio Analysis Graph:
+          // analysisAudio -> MediaElementAudioSourceNode -> AnalyserNode -> GainNode(gain=0) -> AudioContext.destination
+          this.analysisSourceNode.connect(this.analyser);
+          this.analyser.connect(this.analysisGainNode);
+          this.analysisGainNode.connect(this.audioCtx.destination);
         } catch (err) {
-          console.warn('AudioContext graph setup notice:', err);
+          console.warn('AudioContext analysis graph setup notice:', err);
         }
       }
     }
 
-    // Safe user-gesture resume if context is suspended
     if (this.audioCtx && this.audioCtx.state === 'suspended') {
       this.audioCtx.resume().catch((err) => {
-        console.debug('AudioContext user-gesture resume notice:', err);
+        console.debug('AudioContext resume notice:', err);
       });
     }
   }
@@ -123,6 +133,7 @@ class AudioEngine {
     this.audio.addEventListener('pause', () => {
       if (!this.isCrossfading) {
         this.isPlaying = false;
+        if (this.analysisAudio) this.analysisAudio.pause();
         this.syncMediaSessionState();
       }
     });
@@ -164,19 +175,28 @@ class AudioEngine {
       srcUrl = track.url;
     }
 
+    if (srcUrl.startsWith('http://') || srcUrl.startsWith('https://')) {
+      this.audio.crossOrigin = 'anonymous';
+      this.analysisAudio.crossOrigin = 'anonymous';
+    } else {
+      this.audio.removeAttribute('crossorigin');
+      this.analysisAudio.removeAttribute('crossorigin');
+    }
+
+    // Set source on primary audible player
+    this.audio.src = srcUrl;
+    this.audio.currentTime = 0;
+
+    // Set source on silent analysis player
+    this.analysisAudio.src = srcUrl;
+    this.analysisAudio.currentTime = 0;
+    this.analysisAudio.playbackRate = this.audio.playbackRate || 1;
+
+    // Revoke previous Blob URL only after both primary and analysis elements have updated source
     if (this.currentObjectUrl && this.currentObjectUrl !== newObjectUrl) {
       URL.revokeObjectURL(this.currentObjectUrl);
     }
     this.currentObjectUrl = newObjectUrl;
-
-    if (srcUrl.startsWith('http://') || srcUrl.startsWith('https://')) {
-      this.audio.crossOrigin = 'anonymous';
-    } else {
-      this.audio.removeAttribute('crossorigin');
-    }
-
-    this.audio.src = srcUrl;
-    this.audio.currentTime = 0;
 
     if (autoPlay) {
       try {
@@ -184,6 +204,13 @@ class AudioEngine {
         this.isPlaying = true;
         this.updateMediaSession(track);
         this.notifyListeners('playStateChange', { isPlaying: true, track });
+
+        // Start silent analysis player alongside primary player if visible
+        if (!document.hidden && this.analysisAudio) {
+          this.analysisAudio.play().catch((err) => {
+            console.warn('Silent analysisAudio play notice:', err);
+          });
+        }
       } catch (err) {
         console.warn('Autoplay blocked or audio load error:', err);
       }
@@ -198,9 +225,14 @@ class AudioEngine {
 
     if (this.isPlaying) {
       this.audio.pause();
+      if (this.analysisAudio) this.analysisAudio.pause();
       this.isPlaying = false;
     } else {
       this.audio.play().catch((err) => console.warn('Play error:', err));
+      if (this.analysisAudio && !document.hidden) {
+        this.analysisAudio.currentTime = this.audio.currentTime;
+        this.analysisAudio.play().catch((err) => console.warn('analysisAudio play notice:', err));
+      }
       this.isPlaying = true;
     }
     this.syncMediaSessionState();
@@ -224,6 +256,9 @@ class AudioEngine {
       this.audio.currentTime = seconds;
       this.syncMediaSessionState();
     }
+    if (this.analysisAudio) {
+      this.analysisAudio.currentTime = seconds;
+    }
   }
 
   setCrossfade(seconds) {
@@ -240,6 +275,17 @@ class AudioEngine {
     if (!this.audio || !this.currentTrack) return;
     const currentTime = this.audio.currentTime;
     const duration = this.audio.duration || this.currentTrack.duration || 1;
+
+    // Resync silent analysis player if drift exceeds 0.25s while app is visible
+    if (!document.hidden && this.analysisAudio && !this.audio.paused) {
+      const drift = Math.abs(this.audio.currentTime - this.analysisAudio.currentTime);
+      if (drift > 0.25) {
+        this.analysisAudio.currentTime = this.audio.currentTime;
+      }
+      if (this.analysisAudio.paused) {
+        this.analysisAudio.play().catch(() => {});
+      }
+    }
 
     // Sync position state for iOS Lock Screen & Control Center
     if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
@@ -285,7 +331,7 @@ class AudioEngine {
 
       this.audio.volume = Math.max(0, 1 - progress);
 
-      if (progress >= 1 || !this.isPlaying || document.hidden) {
+      if (progress >= 1 || !this.isPlaying) {
         clearInterval(this.fadeInterval);
         this.fadeInterval = null;
         this.isCrossfading = false;
