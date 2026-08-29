@@ -623,42 +623,6 @@ input[type="range"]::-webkit-slider-thumb {
   color: white;
 }
 
-/* EQ & Crossfade Panels inside Player Drawer */
-.audio-tweaks {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-glass);
-  border-radius: var(--radius-md);
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.eq-grid {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 8px;
-  text-align: center;
-}
-
-.eq-band {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-}
-
-.eq-band input[type="range"] {
-  writing-mode: bt-lr;
-  -webkit-appearance: slider-vertical;
-  width: 8px;
-  height: 80px;
-}
-
-.eq-label {
-  font-size: 0.68rem;
-  color: var(--text-muted);
-}
 
 /* iOS PWA Install Banner */
 .install-banner {
