@@ -1,12 +1,11 @@
-// Web Audio Engine with Crossfade, 5-Band EQ, Visualizer Analyser, & MediaSession Integration
+// Web Audio Engine with Single-Element Background Playback, Crossfade, 5-Band EQ, Visualizer Analyser, & MediaSession Integration
 
 class AudioEngine {
   constructor() {
     this.audioCtx = null;
-    this.audioA = new Audio();
-    this.audioB = new Audio();
-    this.activeAudio = this.audioA;
-    this.inactiveAudio = this.audioB;
+    this.audio = new Audio();
+    this.audio.setAttribute('playsinline', 'true');
+    this.audio.preload = 'auto';
 
     this.currentTrack = null;
     this.queue = [];
@@ -14,25 +13,27 @@ class AudioEngine {
     this.isPlaying = false;
     this.crossfadeTime = 3; // default 3s crossfade
     this.isCrossfading = false;
+    this.fadeInterval = null;
 
     this.listeners = new Set();
     this.visualizerCanvas = null;
     this.animFrameId = null;
+    this.wakeLock = null;
 
     // EQ bands
     this.eqBands = [60, 250, 1000, 4000, 12000];
     this.eqNodes = [];
     this.analyser = null;
 
-    this.setupAudioElements();
+    this.setupAudioElement();
     this.setupVisibilityListener();
   }
 
   setupVisibilityListener() {
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && this.isPlaying) {
+      if (this.isPlaying) {
         if (this.audioCtx && this.audioCtx.state === 'suspended') {
-          this.audioCtx.resume();
+          this.audioCtx.resume().catch(() => {});
         }
         this.syncMediaSessionState();
       }
@@ -42,52 +43,90 @@ class AudioEngine {
   initContext() {
     if (!this.audioCtx) {
       const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
-      this.audioCtx = new AudioCtxClass();
+      if (AudioCtxClass) {
+        this.audioCtx = new AudioCtxClass();
 
-      // Master EQ & Analyser setup
-      this.analyser = this.audioCtx.createAnalyser();
-      this.analyser.fftSize = 64;
+        // Master EQ & Analyser setup
+        this.analyser = this.audioCtx.createAnalyser();
+        this.analyser.fftSize = 64;
 
-      let lastNode = this.audioCtx.destination;
-      this.eqNodes = this.eqBands.map((freq, idx) => {
-        const filter = this.audioCtx.createBiquadFilter();
-        if (idx === 0) filter.type = 'lowshelf';
-        else if (idx === this.eqBands.length - 1) filter.type = 'highshelf';
-        else filter.type = 'peaking';
-        filter.frequency.value = freq;
-        filter.gain.value = 0;
-        return filter;
-      });
+        let lastNode = this.audioCtx.destination;
+        this.eqNodes = this.eqBands.map((freq, idx) => {
+          const filter = this.audioCtx.createBiquadFilter();
+          if (idx === 0) filter.type = 'lowshelf';
+          else if (idx === this.eqBands.length - 1) filter.type = 'highshelf';
+          else filter.type = 'peaking';
+          filter.frequency.value = freq;
+          filter.gain.value = 0;
+          return filter;
+        });
 
-      // Chain EQ nodes to Analyser and Destination
-      for (let i = this.eqNodes.length - 1; i >= 0; i--) {
-        this.eqNodes[i].connect(lastNode);
-        lastNode = this.eqNodes[i];
-      }
+        // Chain EQ nodes to Analyser and Destination
+        for (let i = this.eqNodes.length - 1; i >= 0; i--) {
+          this.eqNodes[i].connect(lastNode);
+          lastNode = this.eqNodes[i];
+        }
 
-      this.analyser.connect(lastNode);
-      this.masterDestination = this.analyser;
+        this.analyser.connect(lastNode);
+        this.masterDestination = this.analyser;
 
-      try {
-        const sourceA = this.audioCtx.createMediaElementSource(this.audioA);
-        const sourceB = this.audioCtx.createMediaElementSource(this.audioB);
-        sourceA.connect(this.masterDestination);
-        sourceB.connect(this.masterDestination);
-      } catch (err) {
-        console.warn('Audio node connection notice:', err);
+        try {
+          const source = this.audioCtx.createMediaElementSource(this.audio);
+          source.connect(this.masterDestination);
+        } catch (err) {
+          console.warn('Audio node connection notice:', err);
+        }
+
+        this.audioCtx.onstatechange = () => {
+          if (this.isPlaying && this.audioCtx && this.audioCtx.state === 'suspended') {
+            this.audioCtx.resume().catch(() => {});
+          }
+        };
       }
     }
 
-    if (this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume();
+    if (this.audioCtx && this.audioCtx.state === 'suspended') {
+      this.audioCtx.resume().catch(() => {});
     }
   }
 
-  setupAudioElements() {
-    [this.audioA, this.audioB].forEach((aud) => {
-      aud.addEventListener('ended', () => this.onTrackEnded());
-      aud.addEventListener('timeupdate', () => this.onTimeUpdate());
+  setupAudioElement() {
+    this.audio.addEventListener('ended', () => this.onTrackEnded());
+    this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
+    this.audio.addEventListener('play', () => {
+      this.isPlaying = true;
+      this.syncMediaSessionState();
+      this.requestWakeLock();
     });
+    this.audio.addEventListener('pause', () => {
+      if (!this.isCrossfading) {
+        this.isPlaying = false;
+        this.syncMediaSessionState();
+        this.releaseWakeLock();
+      }
+    });
+    this.audio.addEventListener('error', (e) => {
+      console.error('Audio playback error:', e);
+      // Auto advance on corrupt/unplayable track
+      if (this.isPlaying && this.queue.length > 1) {
+        setTimeout(() => this.nextTrack(), 1000);
+      }
+    });
+  }
+
+  async requestWakeLock() {
+    if ('wakeLock' in navigator && !this.wakeLock) {
+      try {
+        this.wakeLock = await navigator.wakeLock.request('screen');
+      } catch (err) {}
+    }
+  }
+
+  releaseWakeLock() {
+    if (this.wakeLock) {
+      this.wakeLock.release().catch(() => {});
+      this.wakeLock = null;
+    }
   }
 
   setQueue(tracks, startIndex = 0) {
@@ -100,14 +139,13 @@ class AudioEngine {
 
   async playTrack(track, autoPlay = true) {
     this.initContext();
+
     if (this.fadeInterval) {
       clearInterval(this.fadeInterval);
       this.fadeInterval = null;
     }
     this.isCrossfading = false;
-    this.audioA.volume = 1;
-    this.audioB.volume = 1;
-    this.inactiveAudio.pause();
+    this.audio.volume = 1;
 
     this.currentTrack = track;
 
@@ -119,21 +157,18 @@ class AudioEngine {
       srcUrl = track.url;
     }
 
-    const targetAudio = this.activeAudio;
-
-    // Only set crossOrigin for remote HTTP(S) resources to avoid iOS Safari Blob CORS issues
     if (srcUrl.startsWith('http://') || srcUrl.startsWith('https://')) {
-      targetAudio.crossOrigin = 'anonymous';
+      this.audio.crossOrigin = 'anonymous';
     } else {
-      targetAudio.removeAttribute('crossorigin');
+      this.audio.removeAttribute('crossorigin');
     }
 
-    targetAudio.src = srcUrl;
-    targetAudio.currentTime = 0;
+    this.audio.src = srcUrl;
+    this.audio.currentTime = 0;
 
     if (autoPlay) {
       try {
-        await targetAudio.play();
+        await this.audio.play();
         this.isPlaying = true;
         this.updateMediaSession(track);
         this.notifyListeners('playStateChange', { isPlaying: true, track });
@@ -147,13 +182,13 @@ class AudioEngine {
 
   togglePlay() {
     this.initContext();
-    if (!this.activeAudio.src) return;
+    if (!this.audio.src) return;
 
     if (this.isPlaying) {
-      this.activeAudio.pause();
+      this.audio.pause();
       this.isPlaying = false;
     } else {
-      this.activeAudio.play();
+      this.audio.play().catch((err) => console.warn('Play error:', err));
       this.isPlaying = true;
     }
     this.syncMediaSessionState();
@@ -173,8 +208,8 @@ class AudioEngine {
   }
 
   seek(seconds) {
-    if (this.activeAudio) {
-      this.activeAudio.currentTime = seconds;
+    if (this.audio) {
+      this.audio.currentTime = seconds;
       this.syncMediaSessionState();
     }
   }
@@ -190,9 +225,9 @@ class AudioEngine {
   }
 
   onTimeUpdate() {
-    if (!this.activeAudio || !this.currentTrack) return;
-    const currentTime = this.activeAudio.currentTime;
-    const duration = this.activeAudio.duration || this.currentTrack.duration || 1;
+    if (!this.audio || !this.currentTrack) return;
+    const currentTime = this.audio.currentTime;
+    const duration = this.audio.duration || this.currentTrack.duration || 1;
 
     // Sync position state for iOS Lock Screen & Control Center
     if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
@@ -200,7 +235,7 @@ class AudioEngine {
         if (duration > 0 && currentTime <= duration) {
           navigator.mediaSession.setPositionState({
             duration: duration,
-            playbackRate: this.activeAudio.playbackRate || 1,
+            playbackRate: this.audio.playbackRate || 1,
             position: currentTime
           });
         }
@@ -209,11 +244,12 @@ class AudioEngine {
       }
     }
 
-    // Crossfade trigger near end of track
+    // Gentle volume fade near track end if crossfade is enabled and app is in foreground
     if (
       this.crossfadeTime > 0 &&
       duration - currentTime <= this.crossfadeTime &&
       !this.isCrossfading &&
+      !document.hidden &&
       this.queue.length > 1
     ) {
       this.triggerCrossfade();
@@ -226,80 +262,33 @@ class AudioEngine {
     if (this.isCrossfading) return;
     this.isCrossfading = true;
 
-    const nextIndex = (this.currentIndex + 1) % this.queue.length;
-    const nextTrack = this.queue[nextIndex];
-    if (!nextTrack) {
-      this.isCrossfading = false;
-      return;
-    }
-
-    const incomingAudio = this.inactiveAudio;
-    let nextSrc = nextTrack.audioBlob ? URL.createObjectURL(nextTrack.audioBlob) : nextTrack.url;
-    if (nextSrc.startsWith('http://') || nextSrc.startsWith('https://')) {
-      incomingAudio.crossOrigin = 'anonymous';
-    } else {
-      incomingAudio.removeAttribute('crossorigin');
-    }
-    incomingAudio.src = nextSrc;
-    incomingAudio.currentTime = 0;
-    incomingAudio.volume = 0;
-    incomingAudio.play().catch(() => {});
-
-    // If document is hidden (screen locked / app backgrounded), complete track switch instantly to avoid timer throttling
-    if (document.hidden) {
-      this.activeAudio.pause();
-      this.activeAudio.volume = 1;
-      incomingAudio.volume = 1;
-
-      const temp = this.activeAudio;
-      this.activeAudio = this.inactiveAudio;
-      this.inactiveAudio = temp;
-      this.currentIndex = nextIndex;
-      this.currentTrack = nextTrack;
-      this.isCrossfading = false;
-      this.updateMediaSession(nextTrack);
-      this.notifyListeners('trackChange', nextTrack);
-      return;
-    }
-
+    // Fade out volume gracefully on current track before transitioning
     const startTime = Date.now();
-    const durationMs = this.crossfadeTime * 1000;
+    const durationMs = Math.min(this.crossfadeTime * 1000, 3000);
 
     if (this.fadeInterval) clearInterval(this.fadeInterval);
     this.fadeInterval = setInterval(() => {
       const elapsed = Date.now() - startTime;
       const progress = Math.min(1, elapsed / durationMs);
 
-      this.activeAudio.volume = Math.max(0, 1 - progress);
-      incomingAudio.volume = Math.min(1, progress);
+      this.audio.volume = Math.max(0, 1 - progress);
 
       if (progress >= 1 || !this.isPlaying || document.hidden) {
         clearInterval(this.fadeInterval);
         this.fadeInterval = null;
-        this.activeAudio.pause();
-        this.activeAudio.volume = 1;
-        incomingAudio.volume = 1;
-
-        // Swap active and inactive audio elements
-        const temp = this.activeAudio;
-        this.activeAudio = this.inactiveAudio;
-        this.inactiveAudio = temp;
-        this.currentIndex = nextIndex;
-        this.currentTrack = nextTrack;
         this.isCrossfading = false;
-        this.updateMediaSession(nextTrack);
-        this.notifyListeners('trackChange', nextTrack);
+        this.nextTrack();
       }
     }, 50);
   }
 
   onTrackEnded() {
-    if (this.isCrossfading) {
-      // Clean up crossfade state if track ended while fading
-      this.isCrossfading = false;
-      this.activeAudio.volume = 1;
-      this.inactiveAudio.volume = 1;
+    if (this.fadeInterval) {
+      clearInterval(this.fadeInterval);
+      this.fadeInterval = null;
     }
+    this.isCrossfading = false;
+    this.audio.volume = 1;
     this.nextTrack();
   }
 
@@ -331,6 +320,9 @@ class AudioEngine {
       navigator.mediaSession.setActionHandler('pause', () => {
         if (this.isPlaying) this.togglePlay();
       });
+      navigator.mediaSession.setActionHandler('stop', () => {
+        if (this.isPlaying) this.togglePlay();
+      });
       navigator.mediaSession.setActionHandler('previoustrack', () => this.prevTrack());
       navigator.mediaSession.setActionHandler('nexttrack', () => this.nextTrack());
       navigator.mediaSession.setActionHandler('seekto', (details) => {
@@ -338,12 +330,12 @@ class AudioEngine {
       });
       navigator.mediaSession.setActionHandler('seekbackward', (details) => {
         const skip = details.seekOffset || 10;
-        this.seek(Math.max(this.activeAudio.currentTime - skip, 0));
+        this.seek(Math.max(this.audio.currentTime - skip, 0));
       });
       navigator.mediaSession.setActionHandler('seekforward', (details) => {
         const skip = details.seekOffset || 10;
-        const dur = this.activeAudio.duration || 1;
-        this.seek(Math.min(this.activeAudio.currentTime + skip, dur));
+        const dur = this.audio.duration || 1;
+        this.seek(Math.min(this.audio.currentTime + skip, dur));
       });
     }
   }
