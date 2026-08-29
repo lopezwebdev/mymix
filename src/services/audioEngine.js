@@ -25,6 +25,18 @@ class AudioEngine {
     this.analyser = null;
 
     this.setupAudioElements();
+    this.setupVisibilityListener();
+  }
+
+  setupVisibilityListener() {
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && this.isPlaying) {
+        if (this.audioCtx && this.audioCtx.state === 'suspended') {
+          this.audioCtx.resume();
+        }
+        this.syncMediaSessionState();
+      }
+    });
   }
 
   initContext() {
@@ -64,7 +76,6 @@ class AudioEngine {
 
   setupAudioElements() {
     [this.audioA, this.audioB].forEach((aud) => {
-      aud.crossOrigin = 'anonymous';
       aud.addEventListener('ended', () => this.onTrackEnded());
       aud.addEventListener('timeupdate', () => this.onTimeUpdate());
     });
@@ -91,6 +102,14 @@ class AudioEngine {
     }
 
     const targetAudio = this.activeAudio;
+
+    // Only set crossOrigin for remote HTTP(S) resources to avoid iOS Safari Blob CORS issues
+    if (srcUrl.startsWith('http://') || srcUrl.startsWith('https://')) {
+      targetAudio.crossOrigin = 'anonymous';
+    } else {
+      targetAudio.removeAttribute('crossorigin');
+    }
+
     targetAudio.src = srcUrl;
     targetAudio.currentTime = 0;
 
@@ -119,6 +138,7 @@ class AudioEngine {
       this.activeAudio.play();
       this.isPlaying = true;
     }
+    this.syncMediaSessionState();
     this.notifyListeners('playStateChange', { isPlaying: this.isPlaying, track: this.currentTrack });
   }
 
@@ -137,6 +157,7 @@ class AudioEngine {
   seek(seconds) {
     if (this.activeAudio) {
       this.activeAudio.currentTime = seconds;
+      this.syncMediaSessionState();
     }
   }
 
@@ -154,6 +175,21 @@ class AudioEngine {
     if (!this.activeAudio || !this.currentTrack) return;
     const currentTime = this.activeAudio.currentTime;
     const duration = this.activeAudio.duration || this.currentTrack.duration || 1;
+
+    // Sync position state for iOS Lock Screen & Control Center
+    if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
+      try {
+        if (duration > 0 && currentTime <= duration) {
+          navigator.mediaSession.setPositionState({
+            duration: duration,
+            playbackRate: this.activeAudio.playbackRate || 1,
+            position: currentTime
+          });
+        }
+      } catch (err) {
+        // Ignore duration rounding edge cases
+      }
+    }
 
     // Crossfade trigger near end of track
     if (
@@ -174,28 +210,55 @@ class AudioEngine {
 
     const nextIndex = (this.currentIndex + 1) % this.queue.length;
     const nextTrack = this.queue[nextIndex];
-    if (!nextTrack) return;
+    if (!nextTrack) {
+      this.isCrossfading = false;
+      return;
+    }
 
     const incomingAudio = this.inactiveAudio;
     let nextSrc = nextTrack.audioBlob ? URL.createObjectURL(nextTrack.audioBlob) : nextTrack.url;
+    if (nextSrc.startsWith('http://') || nextSrc.startsWith('https://')) {
+      incomingAudio.crossOrigin = 'anonymous';
+    } else {
+      incomingAudio.removeAttribute('crossorigin');
+    }
     incomingAudio.src = nextSrc;
     incomingAudio.volume = 0;
-    incomingAudio.play();
+    incomingAudio.play().catch(() => {});
 
-    const fadeStep = 50;
-    const totalSteps = (this.crossfadeTime * 1000) / fadeStep;
-    let step = 0;
+    // If document is hidden (screen locked / app backgrounded), complete track switch instantly to avoid timer throttling
+    if (document.hidden) {
+      this.activeAudio.pause();
+      this.activeAudio.volume = 1;
+      incomingAudio.volume = 1;
+
+      const temp = this.activeAudio;
+      this.activeAudio = this.inactiveAudio;
+      this.inactiveAudio = temp;
+      this.currentIndex = nextIndex;
+      this.currentTrack = nextTrack;
+      this.isCrossfading = false;
+      this.updateMediaSession(nextTrack);
+      this.notifyListeners('trackChange', nextTrack);
+      return;
+    }
+
+    const startTime = Date.now();
+    const durationMs = this.crossfadeTime * 1000;
 
     const fadeInterval = setInterval(() => {
-      step++;
-      const progress = step / totalSteps;
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(1, elapsed / durationMs);
+
       this.activeAudio.volume = Math.max(0, 1 - progress);
       incomingAudio.volume = Math.min(1, progress);
 
-      if (step >= totalSteps) {
+      if (progress >= 1 || !this.isPlaying || document.hidden) {
         clearInterval(fadeInterval);
         this.activeAudio.pause();
         this.activeAudio.volume = 1;
+        incomingAudio.volume = 1;
+
         // Swap active and inactive audio elements
         const temp = this.activeAudio;
         this.activeAudio = this.inactiveAudio;
@@ -206,33 +269,60 @@ class AudioEngine {
         this.updateMediaSession(nextTrack);
         this.notifyListeners('trackChange', nextTrack);
       }
-    }, fadeStep);
+    }, 50);
   }
 
   onTrackEnded() {
-    if (!this.isCrossfading) {
-      this.nextTrack();
+    if (this.isCrossfading) {
+      // Clean up crossfade state if track ended while fading
+      this.isCrossfading = false;
+      this.activeAudio.volume = 1;
+      this.inactiveAudio.volume = 1;
+    }
+    this.nextTrack();
+  }
+
+  syncMediaSessionState() {
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = this.isPlaying ? 'playing' : 'paused';
     }
   }
 
-  // iOS Lock Screen MediaSession Controls
+  // iOS Lock Screen MediaSession Controls & Background Session Keeper
   updateMediaSession(track) {
     if ('mediaSession' in navigator) {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: track.title || 'Unknown Track',
-        artist: track.artist || 'Unknown Artist',
-        album: track.album || 'MyMix Playlist',
-        artwork: track.artworkUrl
-          ? [{ src: track.artworkUrl, sizes: '512x512', type: 'image/jpeg' }]
-          : [{ src: '/icons/icon-512.jpg', sizes: '512x512', type: 'image/jpeg' }]
-      });
+      if (track) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: track.title || 'Unknown Track',
+          artist: track.artist || 'Unknown Artist',
+          album: track.album || 'MyMix Playlist',
+          artwork: track.artworkUrl
+            ? [{ src: track.artworkUrl, sizes: '512x512', type: 'image/jpeg' }]
+            : [{ src: '/icons/icon-512.jpg', sizes: '512x512', type: 'image/jpeg' }]
+        });
+      }
 
-      navigator.mediaSession.setActionHandler('play', () => this.togglePlay());
-      navigator.mediaSession.setActionHandler('pause', () => this.togglePlay());
+      navigator.mediaSession.playbackState = this.isPlaying ? 'playing' : 'paused';
+
+      navigator.mediaSession.setActionHandler('play', () => {
+        if (!this.isPlaying) this.togglePlay();
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        if (this.isPlaying) this.togglePlay();
+      });
       navigator.mediaSession.setActionHandler('previoustrack', () => this.prevTrack());
       navigator.mediaSession.setActionHandler('nexttrack', () => this.nextTrack());
       navigator.mediaSession.setActionHandler('seekto', (details) => {
         if (details.seekTime !== undefined) this.seek(details.seekTime);
+      });
+      navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+        const skip = details.seekOffset || 10;
+        this.seek(Math.max(this.activeAudio.currentTime - skip, 0));
+      });
+      navigator.mediaSession.setActionHandler('seekforward', (details) => {
+        const skip = details.seekOffset || 10;
+        const dur = this.activeAudio.duration || 1;
+        this.seek(Math.min(this.activeAudio.currentTime + skip, dur));
       });
     }
   }
@@ -245,6 +335,8 @@ class AudioEngine {
 
     const render = () => {
       this.animFrameId = requestAnimationFrame(render);
+      if (document.hidden) return; // Skip canvas rendering while backgrounded to save CPU/battery
+
       const width = this.visualizerCanvas.width;
       const height = this.visualizerCanvas.height;
       ctx.clearRect(0, 0, width, height);
@@ -291,3 +383,4 @@ class AudioEngine {
 }
 
 export const audioEngine = new AudioEngine();
+

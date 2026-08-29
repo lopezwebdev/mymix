@@ -22,8 +22,8 @@ const state = {
   libraryMode: 'artist', // 'artist' (grouped cards) | 'tracks' (all list)
   selectedArtist: null, // Artist group opened in drawer
   curationRules: {
-    minBpm: 60,
-    maxBpm: 180,
+    minBpm: 0,
+    maxBpm: 300,
     minEnergy: 1,
     maxEnergy: 10,
     flowMode: 'harmonic',
@@ -61,15 +61,23 @@ async function init() {
   audioEngine.subscribe('timeUpdate', ({ currentTime, duration }) => {
     state.currentTime = currentTime;
     state.duration = duration || 1;
-    updateTimeDisplay();
+    if (!document.hidden) {
+      updateTimeDisplay();
+    }
   });
 
   audioEngine.subscribe('playStateChange', () => {
-    renderApp();
+    if (!document.hidden) renderApp();
   });
 
   audioEngine.subscribe('trackChange', () => {
-    renderApp();
+    if (!document.hidden) renderApp();
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      renderApp();
+    }
   });
 
   renderApp();
@@ -316,31 +324,7 @@ function attachEventHandlers() {
     });
   });
 
-  // Smart Curator Sliders & Switches
-  document.getElementById('slider-min-bpm')?.addEventListener('input', (e) => {
-    state.curationRules.minBpm = Number(e.target.value);
-    document.getElementById('val-bpm').textContent = `${state.curationRules.minBpm} - ${state.curationRules.maxBpm} BPM`;
-    renderApp();
-  });
-
-  document.getElementById('slider-max-bpm')?.addEventListener('input', (e) => {
-    state.curationRules.maxBpm = Number(e.target.value);
-    document.getElementById('val-bpm').textContent = `${state.curationRules.minBpm} - ${state.curationRules.maxBpm} BPM`;
-    renderApp();
-  });
-
-  document.getElementById('slider-min-energy')?.addEventListener('input', (e) => {
-    state.curationRules.minEnergy = Number(e.target.value);
-    document.getElementById('val-energy').textContent = `${state.curationRules.minEnergy} - ${state.curationRules.maxEnergy} / 10`;
-    renderApp();
-  });
-
-  document.getElementById('slider-max-energy')?.addEventListener('input', (e) => {
-    state.curationRules.maxEnergy = Number(e.target.value);
-    document.getElementById('val-energy').textContent = `${state.curationRules.minEnergy} - ${state.curationRules.maxEnergy} / 10`;
-    renderApp();
-  });
-
+  // Smart Curator Switches
   document.querySelectorAll('.btn-mood-pill').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       state.curationRules.selectedMood = e.currentTarget.dataset.mood;

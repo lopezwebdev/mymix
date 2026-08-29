@@ -3,10 +3,6 @@ import { renderSVG } from '../utils/svg.js';
 
 export function renderSmartCuratorView(curatedTracks, rules, currentTrackId, isPlaying) {
   const {
-    minBpm = 60,
-    maxBpm = 180,
-    minEnergy = 1,
-    maxEnergy = 10,
     flowMode = 'harmonic',
     selectedMood = 'All'
   } = rules;
@@ -22,30 +18,8 @@ export function renderSmartCuratorView(curatedTracks, rules, currentTrackId, isP
           <span class="badge">${renderSVG('zap', 14)} Specific Taste Engine</span>
         </div>
 
-        <div class="curator-grid">
-          <!-- BPM Range Slider -->
-          <div class="rule-box">
-            <span class="rule-label">Tempo / BPM Range</span>
-            <div class="range-slider-group">
-              <span class="slider-val" id="val-bpm">${minBpm} - ${maxBpm} BPM</span>
-              <input type="range" id="slider-min-bpm" min="50" max="200" value="${minBpm}" />
-              <input type="range" id="slider-max-bpm" min="50" max="200" value="${maxBpm}" />
-            </div>
-          </div>
-
-          <!-- Energy Level Slider -->
-          <div class="rule-box">
-            <span class="rule-label">Energy Level</span>
-            <div class="range-slider-group">
-              <span class="slider-val" id="val-energy">${minEnergy} - ${maxEnergy} / 10</span>
-              <input type="range" id="slider-min-energy" min="1" max="10" value="${minEnergy}" />
-              <input type="range" id="slider-max-energy" min="1" max="10" value="${maxEnergy}" />
-            </div>
-          </div>
-        </div>
-
         <!-- Mood Selector Pills -->
-        <div style="margin-top: 16px;">
+        <div>
           <span class="rule-label" style="display:block; margin-bottom: 8px;">Target Mood Vibe</span>
           <div style="display: flex; gap: 8px; flex-wrap: wrap;">
             ${moods.map((m) => `
@@ -104,7 +78,7 @@ export function renderSmartCuratorView(curatedTracks, rules, currentTrackId, isP
         <div class="track-list">
           ${
             curatedTracks.length === 0
-              ? `<div style="text-align:center; padding: 20px; color: var(--text-muted);">No tracks match these curation rules. Try expanding BPM or Energy ranges!</div>`
+              ? `<div style="text-align:center; padding: 20px; color: var(--text-muted);">No tracks match these curation rules. Try selecting a different mood!</div>`
               : curatedTracks.map((t) => renderTrackCard(t, currentTrackId, isPlaying)).join('')
           }
         </div>
