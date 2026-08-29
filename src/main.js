@@ -145,7 +145,7 @@ function renderApp() {
     ${renderMiniPlayerBar(currentTrack, isPlaying)}
 
     <!-- Slide-Up Full Player Drawer -->
-    ${renderFullPlayerDrawer(currentTrack, isPlaying, state.currentTime, state.duration, state.settings.crossfade, state.settings.eq)}
+    ${renderFullPlayerDrawer(currentTrack, isPlaying, state.currentTime, state.duration, state.settings.eq)}
 
     <!-- iOS Install Guide Modal -->
     ${renderInstallGuideModal()}
@@ -411,14 +411,6 @@ function attachEventHandlers() {
   // Scrubber & Audio Tweaks
   document.getElementById('player-scrubber')?.addEventListener('input', (e) => {
     audioEngine.seek(Number(e.target.value));
-  });
-
-  document.getElementById('slider-crossfade')?.addEventListener('input', (e) => {
-    const val = Number(e.target.value);
-    state.settings.crossfade = val;
-    document.getElementById('val-crossfade').textContent = `${val} Seconds`;
-    audioEngine.setCrossfade(val);
-    dbService.saveSettings(state.settings);
   });
 
   document.querySelectorAll('.eq-slider').forEach((slider) => {

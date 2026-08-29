@@ -67,6 +67,15 @@ class AudioEngine {
 
       this.analyser.connect(lastNode);
       this.masterDestination = this.analyser;
+
+      try {
+        const sourceA = this.audioCtx.createMediaElementSource(this.audioA);
+        const sourceB = this.audioCtx.createMediaElementSource(this.audioB);
+        sourceA.connect(this.masterDestination);
+        sourceB.connect(this.masterDestination);
+      } catch (err) {
+        console.warn('Audio node connection notice:', err);
+      }
     }
 
     if (this.audioCtx.state === 'suspended') {
@@ -91,6 +100,15 @@ class AudioEngine {
 
   async playTrack(track, autoPlay = true) {
     this.initContext();
+    if (this.fadeInterval) {
+      clearInterval(this.fadeInterval);
+      this.fadeInterval = null;
+    }
+    this.isCrossfading = false;
+    this.audioA.volume = 1;
+    this.audioB.volume = 1;
+    this.inactiveAudio.pause();
+
     this.currentTrack = track;
 
     // Create object URL from audio Blob if needed
@@ -223,6 +241,7 @@ class AudioEngine {
       incomingAudio.removeAttribute('crossorigin');
     }
     incomingAudio.src = nextSrc;
+    incomingAudio.currentTime = 0;
     incomingAudio.volume = 0;
     incomingAudio.play().catch(() => {});
 
@@ -246,7 +265,8 @@ class AudioEngine {
     const startTime = Date.now();
     const durationMs = this.crossfadeTime * 1000;
 
-    const fadeInterval = setInterval(() => {
+    if (this.fadeInterval) clearInterval(this.fadeInterval);
+    this.fadeInterval = setInterval(() => {
       const elapsed = Date.now() - startTime;
       const progress = Math.min(1, elapsed / durationMs);
 
@@ -254,7 +274,8 @@ class AudioEngine {
       incomingAudio.volume = Math.min(1, progress);
 
       if (progress >= 1 || !this.isPlaying || document.hidden) {
-        clearInterval(fadeInterval);
+        clearInterval(this.fadeInterval);
+        this.fadeInterval = null;
         this.activeAudio.pause();
         this.activeAudio.volume = 1;
         incomingAudio.volume = 1;

@@ -1,6 +1,6 @@
 import { renderSVG } from '../utils/svg.js';
 
-export function renderFullPlayerDrawer(track, isPlaying, currentTime = 0, duration = 1, crossfadeTime = 3, eqValues = [0, 0, 0, 0, 0]) {
+export function renderFullPlayerDrawer(track, isPlaying, currentTime = 0, duration = 1, eqValues = [0, 0, 0, 0, 0]) {
   const currentTitle = track ? track.title : 'No Track Selected';
   const currentArtist = track ? track.artist : 'Choose a track to play';
   const artwork = track ? (track.artworkUrl || '/icons/icon-512.jpg') : '/icons/icon-512.jpg';
@@ -67,37 +67,29 @@ export function renderFullPlayerDrawer(track, isPlaying, currentTime = 0, durati
         </button>
       </div>
 
-      <!-- Audio Tweaks Panel (Crossfade & Equalizer) -->
+      <!-- Audio Tweaks Panel (5-Band Equalizer) -->
       <div class="audio-tweaks">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span class="rule-label">Seamless Crossfade</span>
-          <span class="slider-val" id="val-crossfade">${crossfadeTime} Seconds</span>
-        </div>
-        <input type="range" id="slider-crossfade" min="0" max="10" step="1" value="${crossfadeTime}" />
-
-        <div style="margin-top: 10px;">
-          <span class="rule-label" style="display:block; margin-bottom: 10px;">5-Band Equalizer</span>
-          <div class="eq-grid">
-            <div class="eq-band">
-              <input type="range" class="eq-slider" data-band="0" min="-12" max="12" value="${eqValues[0] || 0}" />
-              <span class="eq-label">60Hz</span>
-            </div>
-            <div class="eq-band">
-              <input type="range" class="eq-slider" data-band="1" min="-12" max="12" value="${eqValues[1] || 0}" />
-              <span class="eq-label">250Hz</span>
-            </div>
-            <div class="eq-band">
-              <input type="range" class="eq-slider" data-band="2" min="-12" max="12" value="${eqValues[2] || 0}" />
-              <span class="eq-label">1kHz</span>
-            </div>
-            <div class="eq-band">
-              <input type="range" class="eq-slider" data-band="3" min="-12" max="12" value="${eqValues[3] || 0}" />
-              <span class="eq-label">4kHz</span>
-            </div>
-            <div class="eq-band">
-              <input type="range" class="eq-slider" data-band="4" min="-12" max="12" value="${eqValues[4] || 0}" />
-              <span class="eq-label">12kHz</span>
-            </div>
+        <span class="rule-label" style="display:block; margin-bottom: 10px;">5-Band Equalizer</span>
+        <div class="eq-grid">
+          <div class="eq-band">
+            <input type="range" class="eq-slider" data-band="0" min="-12" max="12" value="${eqValues[0] || 0}" />
+            <span class="eq-label">60Hz</span>
+          </div>
+          <div class="eq-band">
+            <input type="range" class="eq-slider" data-band="1" min="-12" max="12" value="${eqValues[1] || 0}" />
+            <span class="eq-label">250Hz</span>
+          </div>
+          <div class="eq-band">
+            <input type="range" class="eq-slider" data-band="2" min="-12" max="12" value="${eqValues[2] || 0}" />
+            <span class="eq-label">1kHz</span>
+          </div>
+          <div class="eq-band">
+            <input type="range" class="eq-slider" data-band="3" min="-12" max="12" value="${eqValues[3] || 0}" />
+            <span class="eq-label">4kHz</span>
+          </div>
+          <div class="eq-band">
+            <input type="range" class="eq-slider" data-band="4" min="-12" max="12" value="${eqValues[4] || 0}" />
+            <span class="eq-label">12kHz</span>
           </div>
         </div>
       </div>
