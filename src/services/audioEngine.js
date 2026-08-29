@@ -1,4 +1,16 @@
-// Web Audio Engine with Single-Element Background Playback, Crossfade, 5-Band EQ, Visualizer Analyser, & MediaSession Integration
+// Web Audio Engine with Single-Element Background Playback, 5-Band EQ, Analyser Visualizer, & MediaSession Integration
+/**
+ * DEVELOPER NOTE ON BACKGROUND PLAYBACK:
+ * Operating systems and mobile browsers (especially iOS Safari and PWA standalone modes)
+ * enforce strict background execution power policies. While Web Audio API nodes (AudioContext)
+ * may be suspended by the OS when the screen is locked or app is backgrounded, native audio playback via
+ * HTMLAudioElement combined with MediaSession API permits continuous background playback.
+ * 
+ * Our AudioEngine design strictly decoupling HTMLAudioElement playback from Web Audio rendering loops:
+ * - HTMLAudioElement (`this.audio`) is persistent and acts as the sole playback source of truth.
+ * - MediaElementAudioSourceNode (`this.sourceNode`) is created exactly once to feed the passive EQ and Analyser graph.
+ * - The canvas visualizer render loop is purely passive and safely pauses rendering when backgrounded without interrupting audio playback.
+ */
 
 class AudioEngine {
   constructor() {
@@ -18,12 +30,13 @@ class AudioEngine {
     this.listeners = new Set();
     this.visualizerCanvas = null;
     this.animFrameId = null;
-    this.wakeLock = null;
+    this.currentObjectUrl = null;
 
-    // EQ bands
+    // EQ bands & Audio Graph Nodes
     this.eqBands = [60, 250, 1000, 4000, 12000];
     this.eqNodes = [];
     this.analyser = null;
+    this.sourceNode = null;
 
     this.setupAudioElement();
     this.setupVisibilityListener();
@@ -31,9 +44,11 @@ class AudioEngine {
 
   setupVisibilityListener() {
     document.addEventListener('visibilitychange', () => {
-      if (this.isPlaying) {
+      if (!document.hidden && this.audio && !this.audio.paused) {
         if (this.audioCtx && this.audioCtx.state === 'suspended') {
-          this.audioCtx.resume().catch(() => {});
+          this.audioCtx.resume().catch((err) => {
+            console.debug('AudioContext foreground resume notice:', err);
+          });
         }
         this.syncMediaSessionState();
       }
@@ -44,49 +59,51 @@ class AudioEngine {
     if (!this.audioCtx) {
       const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
       if (AudioCtxClass) {
-        this.audioCtx = new AudioCtxClass();
-
-        // Master EQ & Analyser setup
-        this.analyser = this.audioCtx.createAnalyser();
-        this.analyser.fftSize = 64;
-
-        let lastNode = this.audioCtx.destination;
-        this.eqNodes = this.eqBands.map((freq, idx) => {
-          const filter = this.audioCtx.createBiquadFilter();
-          if (idx === 0) filter.type = 'lowshelf';
-          else if (idx === this.eqBands.length - 1) filter.type = 'highshelf';
-          else filter.type = 'peaking';
-          filter.frequency.value = freq;
-          filter.gain.value = 0;
-          return filter;
-        });
-
-        // Chain EQ nodes to Analyser and Destination
-        for (let i = this.eqNodes.length - 1; i >= 0; i--) {
-          this.eqNodes[i].connect(lastNode);
-          lastNode = this.eqNodes[i];
-        }
-
-        this.analyser.connect(lastNode);
-        this.masterDestination = this.analyser;
-
         try {
-          const source = this.audioCtx.createMediaElementSource(this.audio);
-          source.connect(this.masterDestination);
-        } catch (err) {
-          console.warn('Audio node connection notice:', err);
-        }
+          this.audioCtx = new AudioCtxClass();
+          this.analyser = this.audioCtx.createAnalyser();
+          this.analyser.fftSize = 64;
 
-        this.audioCtx.onstatechange = () => {
-          if (this.isPlaying && this.audioCtx && this.audioCtx.state === 'suspended') {
-            this.audioCtx.resume().catch(() => {});
+          // Create 5-band EQ BiquadFilter nodes
+          this.eqNodes = this.eqBands.map((freq, idx) => {
+            const filter = this.audioCtx.createBiquadFilter();
+            if (idx === 0) filter.type = 'lowshelf';
+            else if (idx === this.eqBands.length - 1) filter.type = 'highshelf';
+            else filter.type = 'peaking';
+            filter.frequency.value = freq;
+            filter.gain.value = 0;
+            return filter;
+          });
+
+          // Single persistent MediaElementAudioSourceNode for HTMLAudioElement
+          if (!this.sourceNode) {
+            this.sourceNode = this.audioCtx.createMediaElementSource(this.audio);
           }
-        };
+
+          // Construct intended Audio Graph:
+          // persistent HTMLAudioElement -> MediaElementAudioSourceNode -> EQ nodes -> AnalyserNode -> AudioContext.destination
+          if (this.eqNodes.length > 0) {
+            this.sourceNode.connect(this.eqNodes[0]);
+            for (let i = 0; i < this.eqNodes.length - 1; i++) {
+              this.eqNodes[i].connect(this.eqNodes[i + 1]);
+            }
+            this.eqNodes[this.eqNodes.length - 1].connect(this.analyser);
+          } else {
+            this.sourceNode.connect(this.analyser);
+          }
+
+          this.analyser.connect(this.audioCtx.destination);
+        } catch (err) {
+          console.warn('AudioContext graph setup notice:', err);
+        }
       }
     }
 
+    // Safe user-gesture resume if context is suspended
     if (this.audioCtx && this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume().catch(() => {});
+      this.audioCtx.resume().catch((err) => {
+        console.debug('AudioContext user-gesture resume notice:', err);
+      });
     }
   }
 
@@ -96,37 +113,19 @@ class AudioEngine {
     this.audio.addEventListener('play', () => {
       this.isPlaying = true;
       this.syncMediaSessionState();
-      this.requestWakeLock();
     });
     this.audio.addEventListener('pause', () => {
       if (!this.isCrossfading) {
         this.isPlaying = false;
         this.syncMediaSessionState();
-        this.releaseWakeLock();
       }
     });
     this.audio.addEventListener('error', (e) => {
       console.error('Audio playback error:', e);
-      // Auto advance on corrupt/unplayable track
       if (this.isPlaying && this.queue.length > 1) {
         setTimeout(() => this.nextTrack(), 1000);
       }
     });
-  }
-
-  async requestWakeLock() {
-    if ('wakeLock' in navigator && !this.wakeLock) {
-      try {
-        this.wakeLock = await navigator.wakeLock.request('screen');
-      } catch (err) {}
-    }
-  }
-
-  releaseWakeLock() {
-    if (this.wakeLock) {
-      this.wakeLock.release().catch(() => {});
-      this.wakeLock = null;
-    }
   }
 
   setQueue(tracks, startIndex = 0) {
@@ -149,13 +148,20 @@ class AudioEngine {
 
     this.currentTrack = track;
 
-    // Create object URL from audio Blob if needed
+    // Manage object URL creation & safe revocation
     let srcUrl = '';
+    let newObjectUrl = null;
     if (track.audioBlob) {
-      srcUrl = URL.createObjectURL(track.audioBlob);
+      newObjectUrl = URL.createObjectURL(track.audioBlob);
+      srcUrl = newObjectUrl;
     } else if (track.url) {
       srcUrl = track.url;
     }
+
+    if (this.currentObjectUrl && this.currentObjectUrl !== newObjectUrl) {
+      URL.revokeObjectURL(this.currentObjectUrl);
+    }
+    this.currentObjectUrl = newObjectUrl;
 
     if (srcUrl.startsWith('http://') || srcUrl.startsWith('https://')) {
       this.audio.crossOrigin = 'anonymous';
@@ -244,7 +250,7 @@ class AudioEngine {
       }
     }
 
-    // Gentle volume fade near track end if crossfade is enabled and app is in foreground
+    // Trigger crossfade transition near track end if crossfade is enabled and foregrounded
     if (
       this.crossfadeTime > 0 &&
       duration - currentTime <= this.crossfadeTime &&
@@ -262,7 +268,7 @@ class AudioEngine {
     if (this.isCrossfading) return;
     this.isCrossfading = true;
 
-    // Fade out volume gracefully on current track before transitioning
+    // Fade out volume gracefully before transitioning tracks
     const startTime = Date.now();
     const durationMs = Math.min(this.crossfadeTime * 1000, 3000);
 
@@ -342,9 +348,18 @@ class AudioEngine {
 
   // Visualizer renderer on Canvas
   attachVisualizer(canvasElement) {
+    if (this.animFrameId) {
+      cancelAnimationFrame(this.animFrameId);
+      this.animFrameId = null;
+    }
+
     this.visualizerCanvas = canvasElement;
     if (!this.visualizerCanvas) return;
     const ctx = this.visualizerCanvas.getContext('2d');
+
+    // Pre-allocate frequency data array once per attachment
+    const bufferLength = this.analyser ? this.analyser.frequencyBinCount : 32;
+    const dataArray = new Uint8Array(bufferLength);
 
     const render = () => {
       this.animFrameId = requestAnimationFrame(render);
@@ -354,15 +369,13 @@ class AudioEngine {
       const height = this.visualizerCanvas.height;
       ctx.clearRect(0, 0, width, height);
 
-      if (!this.analyser || !this.isPlaying) {
-        // Flat line default animation
+      if (!this.analyser || !this.isPlaying || (this.audio && this.audio.paused)) {
+        // Flat line default animation when paused or idle
         ctx.fillStyle = 'rgba(139, 92, 246, 0.2)';
         ctx.fillRect(0, height / 2 - 1, width, 2);
         return;
       }
 
-      const bufferLength = this.analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
       this.analyser.getByteFrequencyData(dataArray);
 
       const barWidth = (width / bufferLength) * 1.5;
@@ -396,4 +409,3 @@ class AudioEngine {
 }
 
 export const audioEngine = new AudioEngine();
-
